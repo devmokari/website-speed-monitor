@@ -37,7 +37,7 @@ def fetch_insight(url: str) -> Dict:
     timestamp = iso_timestamp()
 
     try:
-        with urllib.request.urlopen(request_url, timeout=30) as response:
+        with urllib.request.urlopen(request_url, timeout=300) as response:
             payload = json.loads(response.read().decode("utf-8"))
             item = {
                 "Url": url,
@@ -65,9 +65,26 @@ def lambda_handler(event, context):
     try:
         print(json.dumps({"message": "Received event", "event": event}))
         parsed_event = event if isinstance(event, dict) else {}
-        urls: List[str] = parsed_event.get("urls", [])
+
+        urls: List[str] = []
+
+        if "Records" in parsed_event:  # SQS/SNS batch
+            for record in parsed_event.get("Records", []):
+                try:
+                    body_json = json.loads(record.get("body", "") or "{}")
+                    record_urls = body_json.get("urls", [])
+                    if isinstance(record_urls, list):
+                        urls.extend(record_urls)
+                    else:
+                        print(json.dumps({"warning": "urls is not a list in record", "record": record}))
+                except json.JSONDecodeError as exc:
+                    print(json.dumps({"warning": "Failed to parse record body as JSON", "error": str(exc), "record": record}))
+        else:
+            urls = parsed_event.get("urls", [])
+
         if not isinstance(urls, list):
             raise ValueError("`urls` must be a list")
+
         print(json.dumps({"message": "Processing URLs", "count": len(urls)}))
         results = [fetch_insight(u) for u in urls]
         status_code = 200
