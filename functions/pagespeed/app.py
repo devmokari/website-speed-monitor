@@ -4,7 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-TARGET_URL = "https://aoneauto.com.au/"
+DEFAULT_URL = "https://example.com/"
 API_KEY = os.getenv("PAGESPEED_API_KEY")
 REQUEST_TIMEOUT = int(os.getenv("PAGESPEED_TIMEOUT_SECONDS", "60"))
 PAGE_SPEED_ENDPOINT = (
@@ -53,9 +53,18 @@ def fetch_performance(url: str, strategy: str) -> dict:
 
 def lambda_handler(event, context):
     try:
-        mobile = fetch_performance(TARGET_URL, "mobile")
-        desktop = fetch_performance(TARGET_URL, "desktop")
-        body = {"url": TARGET_URL, "mobile": mobile, "desktop": desktop}
+        raw_url = (
+            (event or {})
+            .get("queryStringParameters", {})
+            .get("url", DEFAULT_URL)
+        )
+        url = raw_url.strip()
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+
+        mobile = fetch_performance(url, "mobile")
+        desktop = fetch_performance(url, "desktop")
+        body = {"url": url, "mobile": mobile, "desktop": desktop}
         status_code = 200
     except Exception as exc:  # pragma: no cover - defensive runtime handling
         body = {"message": "Failed to fetch PageSpeed Insights", "detail": str(exc)}
