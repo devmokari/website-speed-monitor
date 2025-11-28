@@ -1,33 +1,71 @@
 import json
 import os
+from datetime import datetime, timezone
+from typing import Dict, List
 import urllib.error
 import urllib.parse
 import urllib.request
 
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+
 INSIGHT_API_ENDPOINT = os.getenv("INSIGHT_API_ENDPOINT")
+INSIGHTS_TABLE_NAME = os.getenv("INSIGHTS_TABLE_NAME", "Insights")
+
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table(INSIGHTS_TABLE_NAME)
 
 
-def fetch_insight(url: str) -> dict:
+def iso_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def save_result(item: Dict) -> None:
+    try:
+        table.put_item(Item=item)
+    except (BotoCoreError, ClientError) as exc:  # pragma: no cover - dependent on AWS
+        # Log but do not fail the entire batch on DDB write errors
+        print(json.dumps({"error": "Failed to write to DynamoDB", "detail": str(exc), "item": item}))
+
+
+def fetch_insight(url: str) -> Dict:
     if not INSIGHT_API_ENDPOINT:
         raise RuntimeError("INSIGHT_API_ENDPOINT environment variable is not set")
+
     encoded_url = urllib.parse.quote(url, safe="")
     request_url = f"{INSIGHT_API_ENDPOINT}?url={encoded_url}"
+    timestamp = iso_timestamp()
+
     try:
         with urllib.request.urlopen(request_url, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
-            print(json.dumps({"url": url, "insight": payload}))  # logged for inspection
-            return {"url": url, "insight": payload}
+            item = {
+                "Url": url,
+                "Timestamp": timestamp,
+                "Status": "ok",
+                "ResultJson": json.dumps(payload),
+            }
+            save_result(item)
+            print(json.dumps({"url": url, "status": "ok"}))
+            return {"url": url, "insight": payload, "status": "ok"}
     except urllib.error.URLError as exc:  # pragma: no cover - network access
         detail = f"Failed to call insight API: {exc}"
-        print(json.dumps({"url": url, "error": detail}))
-        return {"url": url, "error": detail}
+        item = {
+            "Url": url,
+            "Timestamp": timestamp,
+            "Status": "error",
+            "Error": detail,
+        }
+        save_result(item)
+        print(json.dumps({"url": url, "status": "error", "detail": detail}))
+        return {"url": url, "error": detail, "status": "error"}
 
 
 def lambda_handler(event, context):
     try:
         body = event.get("body") if isinstance(event, dict) else None
         parsed_body = json.loads(body or "{}")
-        urls = parsed_body.get("urls", [])
+        urls: List[str] = parsed_body.get("urls", [])
         if not isinstance(urls, list):
             raise ValueError("`urls` must be a list")
         results = [fetch_insight(u) for u in urls]
