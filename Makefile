@@ -1,12 +1,13 @@
 SHELL := /bin/bash
 
-.PHONY: build local deploy
+.PHONY: build local deploy run
 
 build:
 	sam build
 
 local:
-	sam local start-api
+	python3 main.py
 
 deploy:
 	sam deploy --guided
+

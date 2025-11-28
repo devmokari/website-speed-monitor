@@ -4,7 +4,7 @@ Description: Basic Lambda function that calls Google PageSpeed Insights for a si
 
 Globals:
   Function:
-    Runtime: python3.11
+    Runtime: python3.14
     Timeout: 20
     MemorySize: 128
 
