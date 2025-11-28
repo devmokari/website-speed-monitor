@@ -63,11 +63,12 @@ def fetch_insight(url: str) -> Dict:
 
 def lambda_handler(event, context):
     try:
-        body = event.get("body") if isinstance(event, dict) else None
-        parsed_body = json.loads(body or "{}")
-        urls: List[str] = parsed_body.get("urls", [])
+        print(json.dumps({"message": "Received event", "event": event}))
+        parsed_event = event if isinstance(event, dict) else {}
+        urls: List[str] = parsed_event.get("urls", [])
         if not isinstance(urls, list):
             raise ValueError("`urls` must be a list")
+        print(json.dumps({"message": "Processing URLs", "count": len(urls)}))
         results = [fetch_insight(u) for u in urls]
         status_code = 200
         response_body = {"results": results}
