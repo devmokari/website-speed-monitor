@@ -1,7 +1,9 @@
 import json
-import boto3
-from urllib.parse import parse_qs
 import os
+from typing import Any, Dict, List, Optional
+
+import boto3
+from boto3.dynamodb.conditions import Key
 
 table = boto3.resource("dynamodb").Table("Insights")
 
@@ -9,6 +11,34 @@ table = boto3.resource("dynamodb").Table("Insights")
 BASE_DIR = os.path.dirname(__file__)
 with open(os.path.join(BASE_DIR, "templates/index.html"), "r") as f:
     HTML_PAGE = f.read()
+
+
+def _parse_record(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return parsed mobile/desktop scores (0-100) for a successful record."""
+    if item.get("Status") != "ok":
+        return None
+    raw = item.get("ResultJson")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    ts = item.get("Timestamp")
+    mobile_score = None
+    desktop_score = None
+
+    if isinstance(payload, dict):
+        mobile = payload.get("mobile", {})
+        desktop = payload.get("desktop", {})
+        if isinstance(mobile, dict) and mobile.get("score") is not None:
+            mobile_score = float(mobile.get("score")) * 100
+        if isinstance(desktop, dict) and desktop.get("score") is not None:
+            desktop_score = float(desktop.get("score")) * 100
+
+    return {"timestamp": ts, "mobile": mobile_score, "desktop": desktop_score}
+
 
 def lambda_handler(event, context):
     path = event.get("rawPath", "/")
@@ -25,19 +55,42 @@ def lambda_handler(event, context):
     if path == "/urls":
         resp = table.scan(
             ProjectionExpression="#u",
-            ExpressionAttributeNames={"#u": "Url"}
+            ExpressionAttributeNames={"#u": "Url"},
         )
         urls = sorted({item["Url"] for item in resp.get("Items", [])})
         return json_ok({"urls": urls})
 
-    # 3. Data for selected URL
+    # 3. Data for selected URL (mobile/desktop series)
     if path == "/data":
         params = event.get("queryStringParameters") or {}
         url = params.get("url")
+        if not url:
+            return json_error("Missing url parameter")
+
         resp = table.query(
-            KeyConditionExpression=boto3.dynamodb.conditions.Key("Url").eq(url)
+            KeyConditionExpression=Key("Url").eq(url),
+            ScanIndexForward=True,  # oldest to newest
         )
-        return json_ok({"items": resp.get("Items", [])})
+
+        mobile_points: List[Dict[str, Any]] = []
+        desktop_points: List[Dict[str, Any]] = []
+        for item in resp.get("Items", []):
+            parsed = _parse_record(item)
+            if not parsed:
+                continue
+            ts = parsed["timestamp"]
+            if parsed["mobile"] is not None:
+                mobile_points.append({"t": ts, "y": parsed["mobile"]})
+            if parsed["desktop"] is not None:
+                desktop_points.append({"t": ts, "y": parsed["desktop"]})
+
+        return json_ok(
+            {
+                "url": url,
+                "mobile": mobile_points,
+                "desktop": desktop_points,
+            }
+        )
 
     return json_error("Invalid route")
 
