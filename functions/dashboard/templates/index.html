@@ -30,6 +30,21 @@
   <script>
     let mobileChart, desktopChart;
 
+    const zScore95 = 1.96;
+
+    const dayKeyFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Australia/Melbourne',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+
+    const dayLabelFormatter = new Intl.DateTimeFormat('en-AU', {
+      timeZone: 'Australia/Melbourne',
+      month: 'short',
+      day: 'numeric'
+    });
+
     function unionLabels(mobile, desktop) {
       const set = new Set();
       mobile.forEach(p => set.add(p.t));
@@ -38,35 +53,97 @@
     }
 
     function toSeries(points, labels) {
-      const map = Object.fromEntries(points.map(p => [p.t, p.y]));
+      const map = Object.fromEntries(points.map(p => [p.t, p]));
       return labels.map(l => map[l] ?? null);
     }
 
-    function formatLabel(tsUtc) {
-      const d = new Date(tsUtc);
-      // Melbourne is UTC+11 during daylight savings and UTC+10 otherwise; Intl handles it.
-      return new Intl.DateTimeFormat('en-AU', {
-        timeZone: 'Australia/Melbourne',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      }).format(d);
+    function toMelbourneDay(tsUtc) {
+      return dayKeyFormatter.format(new Date(tsUtc));
     }
 
+    function formatDay(dayKey) {
+      const [year, month, day] = dayKey.split('-').map(Number);
+      return dayLabelFormatter.format(new Date(Date.UTC(year, month - 1, day)));
+    }
+
+    function aggregateDaily(points) {
+      const buckets = new Map();
+      points.forEach(p => {
+        const dayKey = toMelbourneDay(p.t);
+        if (!buckets.has(dayKey)) buckets.set(dayKey, []);
+        buckets.get(dayKey).push(p.y);
+      });
+
+      return Array.from(buckets.entries())
+        .map(([day, values]) => {
+          const n = values.length;
+          const mean = values.reduce((sum, v) => sum + v, 0) / n;
+          let se = 0;
+          if (n > 1) {
+            const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / (n - 1);
+            se = Math.sqrt(variance / n);
+          }
+          const margin = se * zScore95;
+          return {
+            t: day,
+            mean,
+            lower: mean - margin,
+            upper: mean + margin,
+          };
+        })
+        .sort((a, b) => a.t.localeCompare(b.t));
+    }
+
+    const errorBarPlugin = {
+      id: 'errorBars',
+      afterDatasetsDraw(chart) {
+        const { ctx, scales: { y } } = chart;
+        chart.data.datasets.forEach((dataset, datasetIndex) => {
+          const bars = dataset.errorBars || [];
+          const meta = chart.getDatasetMeta(datasetIndex);
+          bars.forEach((bar, i) => {
+            if (!bar || bar.lower == null || bar.upper == null) return;
+            const point = meta.data[i];
+            if (!point) return;
+            const x = point.x;
+            const yTop = y.getPixelForValue(bar.upper);
+            const yBottom = y.getPixelForValue(bar.lower);
+            ctx.save();
+            ctx.strokeStyle = dataset.borderColor;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(x, yTop);
+            ctx.lineTo(x, yBottom);
+            ctx.moveTo(x - 4, yTop);
+            ctx.lineTo(x + 4, yTop);
+            ctx.moveTo(x - 4, yBottom);
+            ctx.lineTo(x + 4, yBottom);
+            ctx.stroke();
+            ctx.restore();
+          });
+        });
+      }
+    };
+
+    Chart.register(errorBarPlugin);
+
     function renderCharts(data) {
-      const labelsRaw = unionLabels(data.mobile, data.desktop);
-      const labelsFormatted = labelsRaw.map(formatLabel);
-      const mobileData = toSeries(data.mobile, labelsRaw);
-      const desktopData = toSeries(data.desktop, labelsRaw);
+      const mobileDaily = aggregateDaily(data.mobile);
+      const desktopDaily = aggregateDaily(data.desktop);
+
+      const labelsRaw = unionLabels(mobileDaily, desktopDaily);
+      const labelsFormatted = labelsRaw.map(formatDay);
+      const mobileSeries = toSeries(mobileDaily, labelsRaw);
+      const desktopSeries = toSeries(desktopDaily, labelsRaw);
+      const mobileData = mobileSeries.map(p => p ? p.mean : null);
+      const desktopData = desktopSeries.map(p => p ? p.mean : null);
 
       const commonOptions = {
         type: 'line',
         options: {
           responsive: true,
           scales: {
-            x: { title: { display: true, text: 'Timestamp' }, ticks: { maxRotation: 45, minRotation: 45 } },
+            x: { title: { display: true, text: 'Day (Melbourne)' }, ticks: { maxRotation: 45, minRotation: 45 } },
             y: { title: { display: true, text: 'Score (0-100)' }, suggestedMin: 0, suggestedMax: 100 }
           }
         }
@@ -79,7 +156,13 @@
           ...commonOptions,
           data: {
             labels: labelsFormatted,
-            datasets: [{ label: 'Mobile', data: mobileData, borderColor: '#0a66c2', backgroundColor: 'rgba(10,102,194,0.2)' }]
+            datasets: [{
+              label: 'Mobile (mean ±95% CI)',
+              data: mobileData,
+              borderColor: '#0a66c2',
+              backgroundColor: 'rgba(10,102,194,0.2)',
+              errorBars: mobileSeries
+            }]
           }
         }
       );
@@ -91,7 +174,13 @@
           ...commonOptions,
           data: {
             labels: labelsFormatted,
-            datasets: [{ label: 'Desktop', data: desktopData, borderColor: '#22a06b', backgroundColor: 'rgba(34,160,107,0.2)' }]
+            datasets: [{
+              label: 'Desktop (mean ±95% CI)',
+              data: desktopData,
+              borderColor: '#22a06b',
+              backgroundColor: 'rgba(34,160,107,0.2)',
+              errorBars: desktopSeries
+            }]
           }
         }
       );

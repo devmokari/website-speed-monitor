@@ -37,7 +37,7 @@ def fetch_insight(url: str) -> Dict:
     timestamp = iso_timestamp()
 
     try:
-        with urllib.request.urlopen(request_url, timeout=300) as response:
+        with urllib.request.urlopen(request_url, timeout=600) as response:
             payload = json.loads(response.read().decode("utf-8"))
             item = {
                 "Url": url,

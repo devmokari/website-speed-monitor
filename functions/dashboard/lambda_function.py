@@ -53,11 +53,19 @@ def lambda_handler(event, context):
 
     # 2. URL list (for dropdown)
     if path == "/urls":
-        resp = table.scan(
-            ProjectionExpression="#u",
-            ExpressionAttributeNames={"#u": "Url"},
-        )
-        urls = sorted({item["Url"] for item in resp.get("Items", [])})
+        urls_set = set()
+        scan_kwargs = {
+            "ProjectionExpression": "#u",
+            "ExpressionAttributeNames": {"#u": "Url"},
+        }
+        resp = table.scan(**scan_kwargs)
+        urls_set.update(item["Url"] for item in resp.get("Items", []))
+
+        while "LastEvaluatedKey" in resp:
+            resp = table.scan(ExclusiveStartKey=resp["LastEvaluatedKey"], **scan_kwargs)
+            urls_set.update(item["Url"] for item in resp.get("Items", []))
+
+        urls = sorted(urls_set)
         return json_ok({"urls": urls})
 
     # 3. Data for selected URL (mobile/desktop series)
